@@ -10,10 +10,10 @@ EOLSolarCellEfficiency = 0.209                      # End Of Life efficiency of 
 BatteryDegradationFittingConstant = 0.0000348       # Curve fitting constant in s^-1/2
 
 ####################################################   ITERATING CONSTANTS   ##################################################
-# Each value is defined as: value = [minimum, maximum, step]
-PanelSurface = [3, 5, 0.4]                          # Effective surface of the Solar Panels (just the surface of the cells)
-BOLBatteryCapacity = [600, 1200, 120]                # Initial capacity of the battery in Wh
-PowerDraw = [600, 1000, 80]                         # Power drawn by the system 
+# Each value is defined as: value = [minimum, maximum, number_of_points]
+PanelSurface = [1, 10, 21]                            # Effective surface of the Solar Panels (just the surface of the cells)
+BOLBatteryCapacity = [400, 2000, 21]                 # Initial capacity of the battery in Wh
+PowerDraw = [200, 2000, 21]                          # Power drawn by the system 
 
 #######################################################   MAIN PROGRAM   ######################################################
 # Import data from csv files
@@ -32,68 +32,83 @@ if (Times['Sun Vector'] != Times['Solar Intensity']).any():
     else:
         raise ValueError('>>> ERROR: Timestamps are not the same between files. Files may be from different simulations')
     
-# Create a timestep for the calculations
-Times['Timestep'] = Times['Solar Intensity'].diff().dt.total_seconds().fillna(0)
-Times['CumulativeTime'] = Times['Timestep'].cumsum()
+# Create timesteps for calculations
+Times['Timestep (s)'] = Times['Solar Intensity'].diff().dt.total_seconds().fillna(0)
+Times['Timestep (h)'] = Times['Timestep (s)']/3600
+Times['CumulativeTime'] = Times['Timestep (s)'].cumsum()
 
-# Calculate angles of incidence from each plane
-SunVector['X Face Angle'] = np.arcsin(SunVector['x (km)']/(np.sqrt((SunVector['x (km)']**2) + (SunVector['y (km)']**2) + (SunVector["z (km)"]**2))))
-SunVector['Y Face Angle'] = np.arcsin(SunVector['y (km)']/(np.sqrt((SunVector['x (km)']**2) + (SunVector['y (km)']**2) + (SunVector["z (km)"]**2))))
-SunVector['Z Face Angle'] = np.arcsin(SunVector['z (km)']/(np.sqrt((SunVector['x (km)']**2) + (SunVector['y (km)']**2) + (SunVector["z (km)"]**2))))
+# Calculate the sines of the angles of incidence of the sun from each plane
+SunVector['Sine of X Face Angle'] = SunVector['x (km)']/(np.sqrt((SunVector['x (km)']**2) + (SunVector['y (km)']**2) + (SunVector["z (km)"]**2)))
+SunVector['Sine of Y Face Angle'] = SunVector['y (km)']/(np.sqrt((SunVector['x (km)']**2) + (SunVector['y (km)']**2) + (SunVector["z (km)"]**2)))
+SunVector['Sine of Z Face Angle'] = SunVector['z (km)']/(np.sqrt((SunVector['x (km)']**2) + (SunVector['y (km)']**2) + (SunVector["z (km)"]**2)))
 
 # Calculate efficiency of the Solar Cells for the duration of the mission
-PanelEfficiency = pd.Series(np.linspace(BOLSolarCellEfficiency, EOLSolarCellEfficiency, num = len(Times['Sun Vector'])))
+PanelEfficiency = pd.Series(np.linspace(BOLSolarCellEfficiency, EOLSolarCellEfficiency, num=len(Times['Sun Vector'])))
 
-# Iterate for every panel surface
+# Calculate generation for every panel size
 Generation = {}
-for PanelSurfaceIndex in range(int((PanelSurface[1] - PanelSurface[0]) / PanelSurface[2])):
-    IterationPanelSurface = PanelSurface[0] + (PanelSurface[2] * PanelSurfaceIndex)
-
+for IterationPanelSurface in np.linspace(PanelSurface[0], PanelSurface[1], num=PanelSurface[2]):
     # Calculate the power generation from each satellite face
     Generation[f'{IterationPanelSurface}m^2'] = pd.DataFrame()
-    Generation[f'{IterationPanelSurface}m^2']['W generated in face X'] = SunPower * np.sin(SunVector['X Face Angle']) * PanelEfficiency * IterationPanelSurface * SolarIntensity
-    Generation[f'{IterationPanelSurface}m^2']['W generated in face Y'] = SunPower * np.sin(SunVector['Y Face Angle']) * PanelEfficiency * IterationPanelSurface * SolarIntensity
-    Generation[f'{IterationPanelSurface}m^2']['W generated in face Z'] = SunPower * np.sin(SunVector['Z Face Angle']) * PanelEfficiency * IterationPanelSurface * SolarIntensity
+    Generation[f'{IterationPanelSurface}m^2']['W generated in face X'] = SunPower * SunVector['Sine of X Face Angle'] * PanelEfficiency * IterationPanelSurface * (SolarIntensity/100)
+    Generation[f'{IterationPanelSurface}m^2']['W generated in face Y'] = SunPower * SunVector['Sine of Y Face Angle'] * PanelEfficiency * IterationPanelSurface * (SolarIntensity/100)
+    Generation[f'{IterationPanelSurface}m^2']['W generated in face Z'] = SunPower * SunVector['Sine of Z Face Angle'] * PanelEfficiency * IterationPanelSurface * (SolarIntensity/100)
 
-# Iterate for every BOL Battery Capacity
+# Calculate battery degradation for every battery size
 RealBatteryCapacity = pd.DataFrame()
-for BOLBatteryCapacityIndex in range(int((BOLBatteryCapacity[1] - BOLBatteryCapacity[0]) / BOLBatteryCapacity[2])):
-    IterationBOLBatteryCapacity = BOLBatteryCapacity[0] + (BOLBatteryCapacity[2] * BOLBatteryCapacityIndex)
-
+BatteryDegradationFactor = (1 - (BatteryDegradationFittingConstant * np.sqrt(Times['CumulativeTime'])))
+for IterationBOLBatteryCapacity in np.linspace(BOLBatteryCapacity[0], BOLBatteryCapacity[1], num=BOLBatteryCapacity[2]):
     # Calculate the degradation of the battery in each point in time
-    RealBatteryCapacity[f'{IterationBOLBatteryCapacity} Wh'] = IterationBOLBatteryCapacity * (1 - (BatteryDegradationFittingConstant * np.sqrt(Times['CumulativeTime'])))
+    RealBatteryCapacity[f'{IterationBOLBatteryCapacity}Wh'] = IterationBOLBatteryCapacity * BatteryDegradationFactor
 
-# Iterate every value to calculate charge
-Charge = {}
-PanelPositions =   [['W generated in face X', 'Panels in face X'],
-                    ['W generated in face Y', 'Panels in face Y'],
-                    ['W generated in face Z', 'Panels in face Z']]
+# Create a key for every panel position
+PanelPositions = [['W generated in face X', 'Panels in face X'],
+                  ['W generated in face Y', 'Panels in face Y'],
+                  ['W generated in face Z', 'Panels in face Z']]
+
+# Initialize a list of every configuration that goes out of battery at any point
 OutOfBattery = []
-for PanelSurfaceIndex in tqdm(range(int((PanelSurface[1] - PanelSurface[0]) / PanelSurface[2])), desc='Loading'):
-    IterationPanelSurface = PanelSurface[0] + (PanelSurface[2] * PanelSurfaceIndex)
+
+# Run through every combination of values to calculate state of charge at every point of the orbit in every configuration
+Charge = {}
+for IterationPanelSurface in tqdm(np.linspace(PanelSurface[0], PanelSurface[1], num=PanelSurface[2]), desc='Loading'):
     Charge[f'{IterationPanelSurface}m^2'] = {}
-
-    for BOLBatteryCapacityIndex in tqdm(range(int((BOLBatteryCapacity[1] - BOLBatteryCapacity[0]) / BOLBatteryCapacity[2])), desc='Battery sizes', leave=False):
-        IterationBOLBatteryCapacity = BOLBatteryCapacity[0] + (BOLBatteryCapacity[2] * BOLBatteryCapacityIndex)
+    for IterationBOLBatteryCapacity in tqdm(np.linspace(BOLBatteryCapacity[0], BOLBatteryCapacity[1], num=BOLBatteryCapacity[2]), desc='Battery sizes', leave=False):
         Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'] = {}
-
-        for PowerDrawIndex in tqdm(range(int((PowerDraw[1] - PowerDraw[0]) / PowerDraw[2])), desc='Power configs', leave=False):
-            IterationPowerDraw = PowerDraw[0] + (PowerDraw[2] * PowerDrawIndex)
+        for IterationPowerDraw in tqdm(np.linspace(PowerDraw[0], PowerDraw[1], num=PowerDraw[2]), desc='Power configs', leave=False):
             Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'][f'{IterationPowerDraw}W'] = pd.DataFrame()
-
             for PanelPositionIndex in range(3):
-                # Calculate state of charge of the battery in each point in time
-                Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'][f'{IterationPowerDraw}W'][PanelPositions[PanelPositionIndex][1]] = np.nan
-                Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'][f'{IterationPowerDraw}W'].loc[0, PanelPositions[PanelPositionIndex][1]] = IterationBOLBatteryCapacity
+                # Define route to the df being built and fill it
+                dfActual = Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'][f'{IterationPowerDraw}W']
+                dfActual[PanelPositions[PanelPositionIndex][1]] = np.nan
+
+                # Redefine df as np arrays for faster calculations
+                GenerationArray = Generation[f'{IterationPanelSurface}m^2'][PanelPositions[PanelPositionIndex][0]].to_numpy()
+                MaximumBatteryArray = RealBatteryCapacity[f'{IterationBOLBatteryCapacity}Wh'].to_numpy()
+
+                # Calculate energy gained or lost
+                NetEnergy = (GenerationArray - IterationPowerDraw) * Times['Timestep (h)']
+
+                # Throwaway list for value storage pre-dump
+                ChargeList = [IterationBOLBatteryCapacity]
+
+                # Reinitialize flag for going out of battery
                 BatteryDown = 0
                 for i in range(len(Times['Sun Vector'])-1):
-                    NextValue = Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'][f'{IterationPowerDraw}W'][PanelPositions[PanelPositionIndex][1]].iloc[i] + (((Generation[f'{IterationPanelSurface}m^2'][PanelPositions[PanelPositionIndex][0]][i+1] - IterationPowerDraw) * Times['Timestep'][1])/3600)
-                    if NextValue > RealBatteryCapacity[f'{IterationBOLBatteryCapacity} Wh'].iloc[i+1]:
-                        Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'][f'{IterationPowerDraw}W'].loc[i+1, PanelPositions[PanelPositionIndex][1]] = RealBatteryCapacity[f'{IterationBOLBatteryCapacity} Wh'].iloc[i+1]
+                    # Calculate state of charge
+                    NextValue = ChargeList[-1] + NetEnergy[i+1]
+
+                    # Check if energy storage is within its maximum and minimum values
+                    if NextValue > MaximumBatteryArray[i+1]:
+                        ChargeList.append(MaximumBatteryArray[i+1])
                     elif NextValue < 0:
-                        Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'][f'{IterationPowerDraw}W'].loc[i+1, PanelPositions[PanelPositionIndex][1]] = 0
+                        ChargeList.append(0)
+                        # Add configuration to the list of going out of battery
                         if BatteryDown == 0:
                             OutOfBattery.append([f'{IterationPanelSurface}m^2', f'{IterationBOLBatteryCapacity}Wh', f'{IterationPowerDraw}W', PanelPositions[PanelPositionIndex][1]])
                             BatteryDown = 1
                     else:
-                        Charge[f'{IterationPanelSurface}m^2'][f'{IterationBOLBatteryCapacity}Wh'][f'{IterationPowerDraw}W'].loc[i+1, PanelPositions[PanelPositionIndex][1]] = NextValue
+                        ChargeList.append(NextValue)
+                    
+                # Dump the throwaway list into the df
+                dfActual[PanelPositions[PanelPositionIndex][1]] = ChargeList
